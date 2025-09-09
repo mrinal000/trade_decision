@@ -118,14 +118,14 @@ server <- function(input, output, session) {
     
     # 2) Checklist logic
     chk <- checklist_engine$evaluate(
-      base_count           = input$base_count,
-      leg_out              = input$leg_out,
-      voz                  = input$voz,
-      fresh5m              = input$fresh5m,
-      rr                   = input$rr,
-      risk_pct             = input$risk_pct,
-      oe                   = input$oe,
-      decision_table_match = dec$eligible
+      base_count    = input$base_count,
+      leg_out       = input$leg_out,
+      voz           = input$voz,
+      fresh5m       = input$fresh5m,
+      rr            = input$rr,
+      risk_pct      = input$risk_pct,
+      oe            = input$oe,
+      decision_match = dec$eligible
     )
     
     # 3) Outputs (UI)
@@ -139,7 +139,7 @@ server <- function(input, output, session) {
     
     output$checklist_ui <- renderUI({
       tagList(
-        p(strong("Checklist pass: "), if (isTRUE(chk$pass)) "Yes" else "No"),
+        p(strong("Checklist pass: "), if (isTRUE(chk$passed)) "Yes" else "No"),
         render_reasons(chk$reasons)
       )
     })
@@ -201,7 +201,7 @@ server <- function(input, output, session) {
         rr            = input$rr,
         risk_pct      = input$risk_pct,
         oe            = input$oe,
-        checklist_pass = isTRUE(chk$pass)
+        checklist_pass = isTRUE(chk$passed)
       )
       TRUE
     }, silent = TRUE)
