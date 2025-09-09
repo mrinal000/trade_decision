@@ -82,7 +82,7 @@ ui <- page_sidebar(
     uiOutput("summary_ui"),
     
     h3("Journal"),
-    dataTableOutput("log_table")
+    DT::dataTableOutput("log_table")
   )
 )
 
