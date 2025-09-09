@@ -41,6 +41,35 @@ db$log_trade(
 logs <- db$get_log()
 stopifnot(nrow(logs) == 1, logs$order_id[1] == "1")
 
+# Disconnect and ensure operations reconnect automatically
+db$disconnect()
+db$log_trade(
+  ts = Sys.time(),
+  order_id = "2",
+  regime = "Trending",
+  side = "Short",
+  htf_dir = "D2S",
+  itf_dir = "D2S",
+  htf_trend = "Down",
+  itf_trend = "Down",
+  curve = "HC",
+  confluence = "None",
+  scenario = "TS_REVERSAL",
+  eligible = TRUE,
+  reasons = "",
+  base_count = 2,
+  leg_out = "Strong",
+  voz = TRUE,
+  fresh5m = TRUE,
+  rr = 3.0,
+  risk_pct = 1.0,
+  oe = 12,
+  checklist_pass = TRUE
+)
+
+logs <- db$get_log()
+stopifnot(nrow(logs) == 1, logs$order_id[1] == "2")
+
 # Clear the log and ensure it's empty
 db$clear_log()
 logs <- db$get_log()
