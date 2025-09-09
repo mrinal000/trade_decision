@@ -15,6 +15,8 @@ library(bslib)
 library(duckdb)
 library(DBI)
 library(DT)
+library(memoise)
+library(magrittr)
 
 # ---- Helpers ------------------------------------------------------------------
 `%||%` <- function(x, y) if (is.null(x)) y else x
@@ -29,6 +31,10 @@ source("R/db_module.R",      local = TRUE)
 decision_engine  <- DecisionModule$new()
 checklist_engine <- ChecklistModule$new()
 db_engine        <- DBModule$new()  # creates/opens DuckDB and ensures schema
+
+# Memoised wrappers for expensive computations
+decision_cached  <- memoise(decision_engine$determine)
+checklist_cached <- memoise(checklist_engine$evaluate)
 
 # ---- UI -----------------------------------------------------------------------
 ui <- page_sidebar(
@@ -106,7 +112,7 @@ server <- function(input, output, session) {
   observeEvent(input$evaluate, {
     confluence_str <- input$confluence
     # 1) Decision table logic
-    dec <- decision_engine$determine(
+    dec <- decision_cached(
       regime    = input$regime,
       side      = input$side,
       htf_dir   = input$htf_dir,
@@ -116,9 +122,9 @@ server <- function(input, output, session) {
       curve     = input$curve,
       confluence = confluence_str != "None"
     )
-    
+
     # 2) Checklist logic
-    chk <- checklist_engine$evaluate(
+    chk <- checklist_cached(
       base_count    = input$base_count,
       leg_out       = input$leg_out,
       voz           = input$voz,
@@ -221,7 +227,7 @@ server <- function(input, output, session) {
   # ---- Journal (initial render) ----
   output$log_table <- DT::renderDataTable({
     DT::datatable(log_data(), options = list(pageLength = 10))
-  })
+  }) %>% bindCache(log_data())
   
   # ---- Cleanup ----
   onStop(function() db_engine$disconnect())
