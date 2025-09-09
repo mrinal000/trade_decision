@@ -30,56 +30,7 @@ DBModule <- R6::R6Class(
     # --------------------------------------------------------------------------
     initialize = function(db_path = "trade_decision_db.duckdb") {
       self$path <- db_path
-      
-      # Create or open the DuckDB database (in-process, no server needed)
-      self$con <- DBI::dbConnect(
-        duckdb::duckdb(),
-        dbdir   = db_path,
-        read_only = FALSE
-      )
-      
-      # Ensure table exists. Start with the *current* full schema including
-      # `order_id` so new DBs are provisioned correctly.
-      DBI::dbExecute(self$con, "
-        CREATE TABLE IF NOT EXISTS trade_log (
-          ts            TIMESTAMP,
-          order_id      TEXT,
-          regime        TEXT,
-          side          TEXT,
-          htf_dir       TEXT,
-          itf_dir       TEXT,
-          htf_trend     TEXT,
-          itf_trend     TEXT,
-          curve         TEXT,
-          confluence    TEXT,
-          scenario      TEXT,
-          eligible      BOOLEAN,
-          reasons       TEXT,
-          base_count    INTEGER,
-          leg_out       TEXT,
-          voz           BOOLEAN,
-          fresh5m       BOOLEAN,
-          rr            DOUBLE,
-          risk_pct      DOUBLE,
-          oe            INTEGER,
-          checklist_pass BOOLEAN
-        )
-      ")
-      
-      # Schema migration: if a legacy DB exists without `order_id`,
-      # add it and create helpful indexes.
-      cols <- try(DBI::dbGetQuery(self$con, "PRAGMA table_info('trade_log')"), silent = TRUE)
-      if (inherits(cols, "try-error")) {
-        stop("Unable to inspect trade_log schema.")
-      }
-      
-      if (!"order_id" %in% cols$name) {
-        DBI::dbExecute(self$con, "ALTER TABLE trade_log ADD COLUMN order_id TEXT")
-      }
-      
-      # Helpful indexes for common access patterns (safe to re-run)
-      DBI::dbExecute(self$con, "CREATE INDEX IF NOT EXISTS idx_trade_log_ts ON trade_log(ts)")
-      DBI::dbExecute(self$con, "CREATE INDEX IF NOT EXISTS idx_trade_log_order_id ON trade_log(order_id)")
+      self$ensure_connection()
 
       # Memoised log fetcher to avoid repeat disk reads
       self$log_cache <- memoise(function(limit = 200) {
@@ -89,6 +40,58 @@ DBModule <- R6::R6Class(
           sprintf("SELECT * FROM trade_log ORDER BY ts DESC LIMIT %d", limit)
         )
       })
+    },
+
+    # Reconnect to DuckDB if the connection has been closed
+    ensure_connection = function() {
+      if (is.null(self$con) || !DBI::dbIsValid(self$con)) {
+        self$con <- DBI::dbConnect(
+          duckdb::duckdb(),
+          dbdir   = self$path,
+          read_only = FALSE
+        )
+
+        DBI::dbExecute(self$con, "
+          CREATE TABLE IF NOT EXISTS trade_log (
+            ts            TIMESTAMP,
+            order_id      TEXT,
+            regime        TEXT,
+            side          TEXT,
+            htf_dir       TEXT,
+            itf_dir       TEXT,
+            htf_trend     TEXT,
+            itf_trend     TEXT,
+            curve         TEXT,
+            confluence    TEXT,
+            scenario      TEXT,
+            eligible      BOOLEAN,
+            reasons       TEXT,
+            base_count    INTEGER,
+            leg_out       TEXT,
+            voz           BOOLEAN,
+            fresh5m       BOOLEAN,
+            rr            DOUBLE,
+            risk_pct      DOUBLE,
+            oe            INTEGER,
+            checklist_pass BOOLEAN
+          )
+        ")
+
+        cols <- try(DBI::dbGetQuery(self$con, "PRAGMA table_info('trade_log')"), silent = TRUE)
+        if (inherits(cols, "try-error")) {
+          stop("Unable to inspect trade_log schema.")
+        }
+
+        if (!"order_id" %in% cols$name) {
+          DBI::dbExecute(self$con, "ALTER TABLE trade_log ADD COLUMN order_id TEXT")
+        }
+
+        DBI::dbExecute(self$con, "CREATE INDEX IF NOT EXISTS idx_trade_log_ts ON trade_log(ts)")
+        DBI::dbExecute(self$con, "CREATE INDEX IF NOT EXISTS idx_trade_log_order_id ON trade_log(order_id)")
+
+        if (!is.null(self$log_cache)) memoise::forget(self$log_cache)
+      }
+      invisible(TRUE)
     },
     
     # --------------------------------------------------------------------------
@@ -106,6 +109,7 @@ DBModule <- R6::R6Class(
       }
       
       # Parameterized insert for safety and correctness
+      self$ensure_connection()
       DBI::dbExecute(
         self$con,
         "
@@ -135,9 +139,20 @@ DBModule <- R6::R6Class(
     # Fetch recent log rows (default 200)
     # --------------------------------------------------------------------------
     get_log = function(limit = 200) {
+      self$ensure_connection()
       self$log_cache(limit)
     },
-    
+
+    # --------------------------------------------------------------------------
+    # Delete all rows from trade_log
+    # --------------------------------------------------------------------------
+    clear_log = function() {
+      self$ensure_connection()
+      DBI::dbExecute(self$con, "DELETE FROM trade_log")
+      memoise::forget(self$log_cache)
+      invisible(TRUE)
+    },
+
     # --------------------------------------------------------------------------
     # Disconnect and clean up
     # --------------------------------------------------------------------------

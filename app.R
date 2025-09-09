@@ -21,6 +21,23 @@ library(magrittr)
 # ---- Helpers ------------------------------------------------------------------
 `%||%` <- function(x, y) if (is.null(x)) y else x
 
+pretty_scenario <- function(code) {
+  if (is.null(code) || is.na(code) || !nzchar(code)) return("—")
+  prefix <- substr(code, 1, 2)
+  prefix_name <- switch(prefix,
+    TL = "Trending Long",
+    TS = "Trending Short",
+    SL = "Sideways Long",
+    SS = "Sideways Short",
+    prefix
+  )
+  rest <- substr(code, 4, nchar(code))
+  if (!nzchar(rest)) return(prefix_name)
+  rest <- gsub("_", " ", rest, fixed = TRUE)
+  rest <- tools::toTitleCase(tolower(rest))
+  paste(prefix_name, rest, sep = " - ")
+}
+
 # ---- Modules ------------------------------------------------------------------
 # These files must exist: R/decision_module.R, R/checklist_module.R, R/db_module.R
 source("R/decision_module.R", local = TRUE)
@@ -88,7 +105,10 @@ ui <- page_sidebar(
     uiOutput("summary_ui"),
     
     h3("Journal"),
-    DT::dataTableOutput("log_table")
+    div(
+      actionButton("clear_log", "Clear Journal", class = "btn-danger mb-2"),
+      DT::dataTableOutput("log_table")
+    )
   )
 )
 
@@ -138,7 +158,7 @@ server <- function(input, output, session) {
     # 3) Outputs (UI)
     output$decision_ui <- renderUI({
       tagList(
-        p(strong("Scenario: "), dec$scenario %||% "—"),
+        p(strong("Scenario: "), pretty_scenario(dec$scenario)),
         p(strong("Eligible: "), if (isTRUE(dec$eligible)) "Yes" else "No"),
         render_reasons(dec$reasons)
       )
@@ -224,10 +244,21 @@ server <- function(input, output, session) {
     }
   })
 
+  # ---- Clear Journal ----
+  observeEvent(input$clear_log, {
+    db_engine$clear_log()
+    log_data(db_engine$get_log(200))
+    showNotification("Journal cleared.", type = "message")
+  })
+
   # ---- Journal (initial render) ----
   output$log_table <- DT::renderDataTable({
-    DT::datatable(log_data(), options = list(pageLength = 10))
-  }) %>% bindCache(log_data())
+    df <- log_data()
+    if (!is.null(df) && "scenario" %in% names(df)) {
+      df$scenario <- vapply(df$scenario, pretty_scenario, character(1))
+    }
+    DT::datatable(df, options = list(pageLength = 10))
+  })
   
   # ---- Cleanup ----
   onStop(function() db_engine$disconnect())
