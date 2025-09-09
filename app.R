@@ -6,15 +6,13 @@
 #     * DecisionModule      -> chooses scenario + eligibility based on DMT rules
 #     * ChecklistModule     -> applies the 8-point checklist gates
 #     * DBModule            -> handles DuckDB storage (journal)
-# - UI/UX via bslib; data handling via tidyverse; persistence via DuckDB.
+# - UI/UX via bslib; persistence via DuckDB.
 # ------------------------------------------------------------------------------
 
 # ---- Libraries ----------------------------------------------------------------
 library(shiny)
 library(bslib)
-library(tidyverse)
 library(duckdb)
-library(duckplyr)  # enables dplyr verbs over DuckDB when desired
 library(DBI)
 library(DT)
 
@@ -95,6 +93,7 @@ server <- function(input, output, session) {
   last_decision  <- reactiveVal(NULL)
   last_checklist <- reactiveVal(NULL)
   last_confluence <- reactiveVal(NULL)
+  log_data <- reactiveVal(db_engine$get_log(200))
   
   # Utility: render reasons as a bullet list (if any)
   render_reasons <- function(items) {
@@ -211,19 +210,17 @@ server <- function(input, output, session) {
     
     if (identical(ok, TRUE)) {
       showNotification("Saved.", type = "message")
-      # refresh journal
-      output$log_table <- DT::renderDataTable({
-        DT::datatable(db_engine$get_log(200), options = list(pageLength = 10))
-      })
+      # refresh journal data
+      log_data(db_engine$get_log(200))
     } else {
       showNotification("Save failed. See console for details.", type = "error")
       message("Save error: ", conditionMessage(attr(ok, "condition") %||% simpleError("unknown")))
     }
   })
-  
+
   # ---- Journal (initial render) ----
   output$log_table <- DT::renderDataTable({
-    DT::datatable(db_engine$get_log(200), options = list(pageLength = 10))
+    DT::datatable(log_data(), options = list(pageLength = 10))
   })
   
   # ---- Cleanup ----
