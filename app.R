@@ -90,10 +90,11 @@ ui <- page_sidebar(
 
 # ---- Server -------------------------------------------------------------------
 server <- function(input, output, session) {
-  
+
   # Snapshot of last evaluation (used when saving)
   last_decision  <- reactiveVal(NULL)
   last_checklist <- reactiveVal(NULL)
+  last_confluence <- reactiveVal(NULL)
   
   # Utility: render reasons as a bullet list (if any)
   render_reasons <- function(items) {
@@ -104,6 +105,7 @@ server <- function(input, output, session) {
   
   # ---- Evaluate (no DB write) ----
   observeEvent(input$evaluate, {
+    confluence_str <- input$confluence
     # 1) Decision table logic
     dec <- decision_engine$determine(
       regime    = input$regime,
@@ -113,7 +115,7 @@ server <- function(input, output, session) {
       htf_trend = input$htf_trend,
       itf_trend = input$itf_trend,
       curve     = input$curve,
-      confluence = input$confluence
+      confluence = confluence_str != "None"
     )
     
     # 2) Checklist logic
@@ -150,14 +152,15 @@ server <- function(input, output, session) {
           strong("Side: "), input$side, "  |  ",
           strong("Regime: "), input$regime, "  |  ",
           strong("Curve: "), input$curve, "  |  ",
-          strong("Confluence: "), input$confluence
+          strong("Confluence: "), confluence_str
         )
       )
     })
-    
+
     # 4) Cache for Save
     last_decision(dec)
     last_checklist(chk)
+    last_confluence(confluence_str)
   })
   
   # ---- Save (requires Order ID + prior Evaluate) ----
@@ -190,7 +193,7 @@ server <- function(input, output, session) {
         htf_trend     = input$htf_trend,
         itf_trend     = input$itf_trend,
         curve         = input$curve,
-        confluence    = input$confluence,
+        confluence    = last_confluence(),
         scenario      = dec$scenario %||% NA_character_,
         eligible      = isTRUE(dec$eligible),
         reasons       = reasons_concat,
