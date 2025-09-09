@@ -11,6 +11,7 @@
 library(R6)
 library(DBI)
 library(duckdb)
+library(memoise)
 
 DBModule <- R6::R6Class(
   classname = "DBModule",
@@ -22,6 +23,7 @@ DBModule <- R6::R6Class(
     # --------------------------------------------------------------------------
     con  = NULL,     # DBI connection handle
     path = NULL,     # path to the DuckDB file
+    log_cache = NULL, # memoised function for fetching logs
     
     # --------------------------------------------------------------------------
     # Constructor
@@ -78,6 +80,15 @@ DBModule <- R6::R6Class(
       # Helpful indexes for common access patterns (safe to re-run)
       DBI::dbExecute(self$con, "CREATE INDEX IF NOT EXISTS idx_trade_log_ts ON trade_log(ts)")
       DBI::dbExecute(self$con, "CREATE INDEX IF NOT EXISTS idx_trade_log_order_id ON trade_log(order_id)")
+
+      # Memoised log fetcher to avoid repeat disk reads
+      self$log_cache <- memoise(function(limit = 200) {
+        limit <- as.integer(limit)
+        DBI::dbGetQuery(
+          self$con,
+          sprintf("SELECT * FROM trade_log ORDER BY ts DESC LIMIT %d", limit)
+        )
+      })
     },
     
     # --------------------------------------------------------------------------
@@ -113,7 +124,10 @@ DBModule <- R6::R6Class(
           as.numeric(rr), as.numeric(risk_pct), as.integer(oe), as.logical(checklist_pass)
         )
       )
-      
+
+      # Invalidate cached log reads since data changed
+      memoise::forget(self$log_cache)
+
       invisible(TRUE)
     },
     
@@ -121,11 +135,7 @@ DBModule <- R6::R6Class(
     # Fetch recent log rows (default 200)
     # --------------------------------------------------------------------------
     get_log = function(limit = 200) {
-      limit <- as.integer(limit)
-      DBI::dbGetQuery(
-        self$con,
-        sprintf("SELECT * FROM trade_log ORDER BY ts DESC LIMIT %d", limit)
-      )
+      self$log_cache(limit)
     },
     
     # --------------------------------------------------------------------------
