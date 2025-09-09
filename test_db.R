@@ -41,6 +41,11 @@ db$log_trade(
 logs <- db$get_log()
 stopifnot(nrow(logs) == 1, logs$order_id[1] == "1")
 
+# Clear the log and ensure it's empty
+db$clear_log()
+logs <- db$get_log()
+stopifnot(nrow(logs) == 0)
+
 db$disconnect()
 unlink(tmpdb)
 

@@ -137,7 +137,16 @@ DBModule <- R6::R6Class(
     get_log = function(limit = 200) {
       self$log_cache(limit)
     },
-    
+
+    # --------------------------------------------------------------------------
+    # Delete all rows from trade_log
+    # --------------------------------------------------------------------------
+    clear_log = function() {
+      DBI::dbExecute(self$con, "DELETE FROM trade_log")
+      memoise::forget(self$log_cache)
+      invisible(TRUE)
+    },
+
     # --------------------------------------------------------------------------
     # Disconnect and clean up
     # --------------------------------------------------------------------------
