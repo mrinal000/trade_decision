@@ -12,6 +12,9 @@
 # ---- Libraries ----------------------------------------------------------------
 library(shiny)
 library(bslib)
+library(duckdb)
+library(DBI)
+library(DT)
 
 # ---- Helpers ------------------------------------------------------------------
 `%||%` <- function(x, y) if (is.null(x)) y else x
