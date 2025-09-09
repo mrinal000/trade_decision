@@ -105,7 +105,10 @@ ui <- page_sidebar(
     uiOutput("summary_ui"),
     
     h3("Journal"),
-    DT::dataTableOutput("log_table")
+    div(
+      actionButton("clear_log", "Clear Journal", class = "btn-danger mb-2"),
+      DT::dataTableOutput("log_table")
+    )
   )
 )
 
@@ -239,6 +242,13 @@ server <- function(input, output, session) {
       showNotification("Save failed. See console for details.", type = "error")
       message("Save error: ", conditionMessage(attr(ok, "condition") %||% simpleError("unknown")))
     }
+  })
+
+  # ---- Clear Journal ----
+  observeEvent(input$clear_log, {
+    db_engine$clear_log()
+    log_data(db_engine$get_log(200))
+    showNotification("Journal cleared.", type = "message")
   })
 
   # ---- Journal (initial render) ----
