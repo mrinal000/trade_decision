@@ -227,7 +227,7 @@ server <- function(input, output, session) {
   # ---- Journal (initial render) ----
   output$log_table <- DT::renderDataTable({
     DT::datatable(log_data(), options = list(pageLength = 10))
-  }) %>% bindCache(log_data())
+  })
   
   # ---- Cleanup ----
   onStop(function() db_engine$disconnect())
