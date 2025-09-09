@@ -248,6 +248,7 @@ server <- function(input, output, session) {
       df$scenario <- vapply(df$scenario, pretty_scenario, character(1))
     }
     DT::datatable(df, options = list(pageLength = 10))
+    DT::datatable(log_data(), options = list(pageLength = 10))
   })
   
   # ---- Cleanup ----
