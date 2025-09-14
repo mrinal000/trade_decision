@@ -284,7 +284,7 @@ server <- function(input, output, session) {
       if (!is.null(df) && "scenario" %in% names(df)) {
         df$scenario <- vapply(df$scenario, pretty_scenario, character(1))
       }
-      write_xlsx(df, file)
+      writexl::write_xlsx(df, file)
     }
   )
   
