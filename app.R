@@ -107,7 +107,12 @@ ui <- page_sidebar(
     h3("Journal"),
     div(
       actionButton("clear_log", "Clear Journal", class = "btn-danger mb-2"),
-      DT::dataTableOutput("log_table")
+      DT::dataTableOutput("log_table"),
+      div(
+        class = "mt-2",
+        downloadButton("download_log_csv", "Download CSV"),
+        downloadButton("download_log_xlsx", "Download Excel", class = "ms-2")
+      )
     )
   )
 )
@@ -260,6 +265,28 @@ server <- function(input, output, session) {
     DT::datatable(df, options = list(pageLength = 10))
     DT::datatable(log_data(), options = list(pageLength = 10))
   })
+
+  output$download_log_csv <- downloadHandler(
+    filename = function() paste0("journal-", Sys.Date(), ".csv"),
+    content = function(file) {
+      df <- log_data()
+      if (!is.null(df) && "scenario" %in% names(df)) {
+        df$scenario <- vapply(df$scenario, pretty_scenario, character(1))
+      }
+      write.csv(df, file, row.names = FALSE)
+    }
+  )
+
+  output$download_log_xlsx <- downloadHandler(
+    filename = function() paste0("journal-", Sys.Date(), ".xlsx"),
+    content = function(file) {
+      df <- log_data()
+      if (!is.null(df) && "scenario" %in% names(df)) {
+        df$scenario <- vapply(df$scenario, pretty_scenario, character(1))
+      }
+      writexl::write_xlsx(df, file)
+    }
+  )
   
   # ---- Cleanup ----
   onStop(function() db_engine$disconnect())
