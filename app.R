@@ -135,21 +135,13 @@ ui <- page_sidebar(
       div(
         class = "mt-4",
         card(
-          card_header("Controls"),
-          card_body(
-            layout_column_wrap(
-              width = 1/4,
-              textInput("dp_symbol", "Symbol"),
-              selectInput("dp_side", "Side", choices = c("Long", "Short")),
-              dateInput("dp_as_of", "As of", value = Sys.Date()),
-              div(class = "mt-4", actionButton("dp_evaluate", "Evaluate", class = "btn-primary"))
-            )
-          )
-        ),
-        card(
           card_header("Snapshot Editor"),
           card_body(
-            DTOutput("dp_snapshots")
+            div(
+              class = "d-flex justify-content-end mb-3",
+              actionButton("dp_evaluate", "Evaluate", class = "btn-primary")
+            ),
+            uiOutput("dp_snapshot_editor")
           )
         ),
         card(
@@ -179,42 +171,81 @@ server <- function(input, output, session) {
     direction = rep("", 7),
     curve = rep("", 7),
     confluence = rep("None", 7),
-    ath_flag = rep(FALSE, 7),
-    atl_flag = rep(FALSE, 7),
     stringsAsFactors = FALSE
   )
-  dp_snapshots <- reactiveVal(dp_default_snapshots)
   dp_results <- reactiveVal(NULL)
 
-  dp_snapshot_proxy <- dataTableProxy("dp_snapshots")
+  tf_to_id <- function(tf) {
+    gsub("[^A-Za-z0-9]", "_", tolower(tf))
+  }
+  snapshot_input_id <- function(tf, field) {
+    paste0("dp_", tf_to_id(tf), "_", field)
+  }
 
-  output$dp_snapshots <- DT::renderDT({
-    DT::datatable(
-      dp_snapshots(),
-      rownames = FALSE,
-      options = list(dom = "t", paging = FALSE, ordering = FALSE),
-      editable = list(target = "cell", disable = list(columns = c(0)))
+  trend_choices <- c("Select…" = "", "Up", "Down", "Sideways")
+  direction_choices <- c(
+    "Select…" = "",
+    "D2S", "S2D", "D2ATH", "ATH2D", "S2ATL", "ATL2S"
+  )
+  curve_choices <- c("Select…" = "", "LC", "EQ", "HC")
+  confluence_choices <- c(
+    "None", "LTF_DZ_with_ITF_DZ", "LTF_SZ_with_ITF_SZ"
+  )
+
+  output$dp_snapshot_editor <- renderUI({
+    snapshots <- dp_default_snapshots
+    tagList(
+      lapply(seq_len(nrow(snapshots)), function(i) {
+        row <- snapshots[i, ]
+        tf <- row$tf_label
+        card(
+          class = "mb-3",
+          card_header(tf),
+          card_body(
+            layout_column_wrap(
+              width = 1/3,
+              selectInput(
+                snapshot_input_id(tf, "trend"),
+                "Trend",
+                choices = trend_choices,
+                selected = row$trend
+              ),
+              selectInput(
+                snapshot_input_id(tf, "direction"),
+                "Direction",
+                choices = direction_choices,
+                selected = row$direction
+              ),
+              selectInput(
+                snapshot_input_id(tf, "curve"),
+                "Curve",
+                choices = curve_choices,
+                selected = row$curve
+              ),
+              selectInput(
+                snapshot_input_id(tf, "confluence"),
+                "Confluence",
+                choices = confluence_choices,
+                selected = row$confluence
+              )
+            )
+          )
+        )
+      })
     )
   })
 
-  observeEvent(input$dp_snapshots_cell_edit, {
-    info <- input$dp_snapshots_cell_edit
-    i <- info$row
-    j <- info$col + 1
-    df <- dp_snapshots()
-    if (i < 1 || i > nrow(df) || j < 1 || j > ncol(df)) {
-      return()
+  collect_dp_snapshots <- function() {
+    df <- dp_default_snapshots
+    for (i in seq_len(nrow(df))) {
+      tf <- df$tf_label[i]
+      df$trend[i] <- input[[snapshot_input_id(tf, "trend")]] %||% ""
+      df$direction[i] <- input[[snapshot_input_id(tf, "direction")]] %||% ""
+      df$curve[i] <- input[[snapshot_input_id(tf, "curve")]] %||% ""
+      df$confluence[i] <- input[[snapshot_input_id(tf, "confluence")]] %||% "None"
     }
-    col_name <- names(df)[j]
-    value <- info$value
-    if (col_name %in% c("ath_flag", "atl_flag")) {
-      df[i, j] <- tolower(as.character(value)) %in% c("true", "t", "1", "yes")
-    } else {
-      df[i, j] <- as.character(value)
-    }
-    dp_snapshots(df)
-    DT::replaceData(dp_snapshot_proxy, df, resetPaging = FALSE, rownames = FALSE)
-  })
+    df
+  }
 
   output$dp_results <- DT::renderDT({
     res <- dp_results()
@@ -282,8 +313,24 @@ server <- function(input, output, session) {
     list(value = normalized, ok = TRUE, note = NULL)
   }
 
+  infer_side <- function(itf_direction) {
+    raw <- toupper(trimws(as.character(itf_direction %||% "")))
+    if (!nzchar(raw)) {
+      return(list(value = NA_character_, ok = FALSE, note = "ITF direction missing for side inference"))
+    }
+    long_dirs <- c("D2S", "D2ATH", "ATH2D")
+    short_dirs <- c("S2D", "S2ATL", "ATL2S")
+    if (raw %in% long_dirs) {
+      return(list(value = "Long", ok = TRUE, note = NULL))
+    }
+    if (raw %in% short_dirs) {
+      return(list(value = "Short", ok = TRUE, note = NULL))
+    }
+    list(value = NA_character_, ok = FALSE, note = sprintf("Unable to infer trade side from ITF direction '%s'", raw))
+  }
+
   observeEvent(input$dp_evaluate, {
-    snapshots <- dp_snapshots()
+    snapshots <- collect_dp_snapshots()
     snapshot_lookup <- split(snapshots, snapshots$tf_label)
 
     trios <- list(
@@ -338,6 +385,8 @@ server <- function(input, output, session) {
         ltf_dir <- dir_info$value
       }
 
+      inferred_side <- list(value = NA_character_, ok = FALSE, note = "ITF context missing")
+
       if (!is.null(itf_row)) {
         trend_info <- normalize_trend(itf_row$trend, trio$itf)
         dir_info <- normalize_direction(itf_row$direction, trio$itf)
@@ -357,6 +406,11 @@ server <- function(input, output, session) {
         itf_trend <- trend_info$value
         itf_dir <- dir_info$value
         itf_confluence <- conf_info$value
+        inferred_side <- infer_side(itf_dir)
+        if (!inferred_side$ok) {
+          notes <- c(notes, inferred_side$note)
+          valid <- FALSE
+        }
       }
 
       if (!is.null(htf_row)) {
@@ -383,35 +437,40 @@ server <- function(input, output, session) {
       regime <- if (!is.na(itf_trend) && identical(itf_trend, "Sideways")) "Sideways" else "Trending"
 
       if (regime == "Sideways") {
-        expected_conf <- if (identical(input$dp_side, "Long")) "LTF_DZ_with_ITF_DZ" else "LTF_SZ_with_ITF_SZ"
-        if (!identical(itf_confluence, expected_conf)) {
-          notes <- c(notes, "Sideways ITF requires proper confluence")
+        if (!inferred_side$ok) {
+          notes <- c(notes, "Unable to determine trade side for sideways evaluation")
           valid <- FALSE
+        } else {
+          expected_conf <- if (identical(inferred_side$value, "Long")) "LTF_DZ_with_ITF_DZ" else "LTF_SZ_with_ITF_SZ"
+          if (!identical(itf_confluence, expected_conf)) {
+            notes <- c(notes, "Sideways ITF requires proper confluence")
+            valid <- FALSE
+          }
         }
       }
-
-      htf_ath <- if (!is.null(htf_row)) isTRUE(htf_row$ath_flag) else FALSE
-      htf_atl <- if (!is.null(htf_row)) isTRUE(htf_row$atl_flag) else FALSE
 
       scenario <- NA_character_
       decision_notes <- character()
       decision_eligible <- FALSE
+      trade_side_display <- inferred_side$value
 
       if (valid) {
         dec <- decision_engine$determine(
           regime = regime,
-          side = input$dp_side,
+          side = inferred_side$value,
           htf_dir = htf_dir,
           itf_dir = itf_dir,
           htf_trend = htf_trend,
           itf_trend = itf_trend,
           curve = htf_curve,
-          confluence = !identical(itf_confluence, "None"),
-          ath_atl = list(htf_ath = htf_ath, htf_atl = htf_atl)
+          confluence = !identical(itf_confluence, "None")
         )
         scenario <- dec$scenario %||% NA_character_
         decision_notes <- dec$reasons %||% character(0)
         decision_eligible <- isTRUE(dec$eligible)
+        if (!is.null(dec$candidate_side) && !is.na(dec$candidate_side)) {
+          trade_side_display <- tools::toTitleCase(dec$candidate_side)
+        }
       }
 
       all_notes <- unique(c(notes, decision_notes))
@@ -421,7 +480,7 @@ server <- function(input, output, session) {
 
       human_readable <- paste0(
         "Exec TF ", trio$exec_tf, " (ITF ", trio$itf, ", HTF ", trio$htf, "): ",
-        if (eligible_flag) "Eligible" else "Not eligible", " for ", input$dp_side,
+        if (eligible_flag) "Eligible" else "Not eligible", " for ", trade_side_display %||% "Unknown",
         " — Scenario: ", scenario %||% "N/A",
         if (length(all_notes)) paste0(" | Notes: ", paste(all_notes, collapse = "; ")) else ""
       )
@@ -430,7 +489,8 @@ server <- function(input, output, session) {
         exec_tf = trio$exec_tf,
         itf = trio$itf,
         htf = trio$htf,
-        side = input$dp_side,
+        inferred_side = inferred_side$value %||% NA_character_,
+        trade_side = trade_side_display %||% NA_character_,
         regime = regime,
         scenario = scenario %||% NA_character_,
         eligible = eligible_flag,
