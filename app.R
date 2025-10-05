@@ -217,6 +217,7 @@ server <- function(input, output, session) {
 
   normalize_trend <- function(x) {
     val <- trimws(as.character(x %||% ""))
+    if (!nzchar(val)) return(NA_character_)
     val_lower <- tolower(val)
     if (val_lower == "up") return("Up")
     if (val_lower == "down") return("Down")
@@ -225,25 +226,26 @@ server <- function(input, output, session) {
   }
 
   normalize_direction <- function(x) {
-    toupper(trimws(as.character(x %||% "")))
+    val <- trimws(as.character(x %||% ""))
+    if (!nzchar(val)) return(NA_character_)
+    toupper(val)
   }
 
   normalize_curve <- function(x) {
-    toupper(trimws(as.character(x %||% "")))
+    val <- trimws(as.character(x %||% ""))
+    if (!nzchar(val)) return(NA_character_)
+    toupper(val)
   }
 
   normalize_confluence <- function(x) {
     val <- trimws(as.character(x %||% ""))
-    if (!nzchar(val)) {
-      return("None")
-    }
-    val_upper <- toupper(val)
-    mapping <- c(
+    if (!nzchar(val)) return("None")
+    lookup <- c(
       "NONE" = "None",
       "LTF_DZ_WITH_ITF_DZ" = "LTF_DZ_with_ITF_DZ",
       "LTF_SZ_WITH_ITF_SZ" = "LTF_SZ_with_ITF_SZ"
     )
-    mapping[[val_upper]] %||% val
+    lookup[[toupper(val)]] %||% val
   }
 
   allowed_trends <- c("Up", "Down", "Sideways")
@@ -318,7 +320,7 @@ server <- function(input, output, session) {
           notes <- c(notes, sprintf("Invalid HTF trend '%s'", htf_row$trend))
           valid <- FALSE
         }
-        if (!nzchar(curve_val)) {
+        if (is.na(curve_val)) {
           notes <- c(notes, "HTF curve missing")
           valid <- FALSE
         } else if (!curve_val %in% allowed_curves) {
@@ -338,7 +340,7 @@ server <- function(input, output, session) {
 
       regime <- if (tolower(itf_trend %||% "") == "sideways") "Sideways" else "Trending"
 
-      if (regime == "Sideways") {
+      if (identical(regime, "Sideways")) {
         expected_conf <- if (identical(input$dp_side, "Long")) "LTF_DZ_with_ITF_DZ" else "LTF_SZ_with_ITF_SZ"
         if (!identical(confluence_val, expected_conf)) {
           note <- "Sideways ITF requires proper confluence"
@@ -352,7 +354,6 @@ server <- function(input, output, session) {
       eligible_flag <- FALSE
 
       if (valid) {
-        confluence_token <- as.character(confluence_val %||% "None")
         decision_args <- list(
           regime = regime,
           side = input$dp_side,
@@ -361,7 +362,7 @@ server <- function(input, output, session) {
           htf_trend = htf_trend,
           itf_trend = itf_trend,
           curve = curve_val,
-          confluence = confluence_token
+          confluence = !identical(confluence_val, "None")
         )
         decision_formals <- names(formals(decision_engine$determine))
         if ("ath_atl" %in% decision_formals) {
@@ -369,10 +370,6 @@ server <- function(input, output, session) {
             htf_ath = isTRUE(htf_row$ath_flag),
             htf_atl = isTRUE(htf_row$atl_flag)
           )
-        }
-        # Decision module expects a logical confluence flag; convert if needed.
-        if (is.character(decision_args$confluence) && length(decision_args$confluence) == 1) {
-          decision_args$confluence <- !identical(decision_args$confluence, "None")
         }
         dec <- do.call(decision_cached, decision_args)
         scenario <- dec$scenario %||% NA_character_
@@ -390,7 +387,7 @@ server <- function(input, output, session) {
         side = input$dp_side,
         regime = regime,
         scenario = scenario %||% NA_character_,
-        eligible = eligible_flag && valid,
+        eligible = valid && eligible_flag,
         notes = if (length(notes)) paste(notes, collapse = "; ") else "",
         stringsAsFactors = FALSE
       )
