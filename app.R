@@ -20,7 +20,15 @@ library(magrittr)
 library(writexl)
 
 # ---- Helpers ------------------------------------------------------------------
-`%||%` <- function(x, y) if (is.null(x)) y else x
+`%||%` <- function(x, y) {
+  if (is.null(x)) return(y)
+  if (length(x) == 0) return(y)
+  if (is.atomic(x) && length(x) == 1) {
+    if (is.na(x)) return(y)
+    if (is.character(x) && !nzchar(x)) return(y)
+  }
+  x
+}
 
 pretty_scenario <- function(code) {
   if (is.null(code) || is.na(code) || !nzchar(code)) return("—")
@@ -94,25 +102,60 @@ ui <- page_sidebar(
   ),
   
   # Main panel (outputs)
-  div(
-    class = "mt-4",
-    h3("Decision Output"),
-    uiOutput("decision_ui"),
-    
-    h3("Checklist Output"),
-    uiOutput("checklist_ui"),
-    
-    h3("Summary"),
-    uiOutput("summary_ui"),
-    
-    h3("Journal"),
-    div(
-      actionButton("clear_log", "Clear Journal", class = "btn-danger mb-2"),
-      DT::dataTableOutput("log_table"),
+  navset_tab(
+    id = "main_tabs",
+    nav_panel(
+      "Single TF",
       div(
-        class = "mt-2",
-        downloadButton("download_log_csv", "Download CSV"),
-        downloadButton("download_log_xlsx", "Download Excel", class = "ms-2")
+        class = "mt-4",
+        h3("Decision Output"),
+        uiOutput("decision_ui"),
+
+        h3("Checklist Output"),
+        uiOutput("checklist_ui"),
+
+        h3("Summary"),
+        uiOutput("summary_ui"),
+
+        h3("Journal"),
+        div(
+          actionButton("clear_log", "Clear Journal", class = "btn-danger mb-2"),
+          DT::dataTableOutput("log_table"),
+          div(
+            class = "mt-2",
+            downloadButton("download_log_csv", "Download CSV"),
+            downloadButton("download_log_xlsx", "Download Excel", class = "ms-2")
+          )
+        )
+      )
+    ),
+    nav_panel(
+      "Decision Pairs",
+      div(
+        class = "mt-4",
+        h3("Decision Pairs"),
+        card(
+          card_header("Controls"),
+          layout_column_wrap(
+            width = 1/3,
+            textInput("dp_symbol", "Symbol"),
+            selectInput("dp_side", "Side", choices = c("Long", "Short")),
+            dateInput("dp_as_of", "As of", value = Sys.Date()),
+            div(class = "mt-4", actionButton("dp_evaluate", "Evaluate"))
+          )
+        ),
+        card(
+          card_header("Snapshot Editor"),
+          card_body(
+            DTOutput("dp_snapshots")
+          )
+        ),
+        card(
+          card_header("Results"),
+          card_body(
+            DTOutput("dp_results")
+          )
+        )
       )
     )
   )
@@ -126,7 +169,231 @@ server <- function(input, output, session) {
   last_checklist <- reactiveVal(NULL)
   last_confluence <- reactiveVal(NULL)
   log_data <- reactiveVal(db_engine$get_log(200))
-  
+
+  # ---- Decision Pairs state --------------------------------------------------
+  dp_default_snapshots <- data.frame(
+    tf_label = c("1m", "5m", "15m", "75m", "Daily", "Weekly", "Monthly"),
+    trend = rep("Up", 7),
+    direction = rep("D2S", 7),
+    curve = c("", "", "", "EQ", "EQ", "EQ", "EQ"),
+    confluence = rep("None", 7),
+    ath_flag = rep(FALSE, 7),
+    atl_flag = rep(FALSE, 7),
+    stringsAsFactors = FALSE
+  )
+
+  dp_snapshots <- reactiveVal(dp_default_snapshots)
+  dp_results <- reactiveVal(NULL)
+
+  dp_snapshot_proxy <- dataTableProxy("dp_snapshots")
+
+  output$dp_snapshots <- DT::renderDT({
+    DT::datatable(
+      dp_snapshots(),
+      rownames = FALSE,
+      options = list(dom = "t", paging = FALSE, ordering = FALSE),
+      editable = list(target = "cell", disable = list(columns = c(0)))
+    )
+  })
+
+  observeEvent(input$dp_snapshots_cell_edit, {
+    info <- input$dp_snapshots_cell_edit
+    i <- info$row
+    j <- info$col + 1
+    v <- info$value
+    df <- dp_snapshots()
+    if (i < 1 || i > nrow(df) || j < 1 || j > ncol(df)) {
+      return()
+    }
+    col_name <- names(df)[j]
+    if (col_name %in% c("ath_flag", "atl_flag")) {
+      df[i, j] <- tolower(as.character(v)) %in% c("true", "t", "1", "yes")
+    } else {
+      df[i, j] <- v
+    }
+    dp_snapshots(df)
+    DT::replaceData(dp_snapshot_proxy, df, resetPaging = FALSE, rownames = FALSE)
+  })
+
+  normalize_trend <- function(x) {
+    val <- trimws(as.character(x %||% ""))
+    val_lower <- tolower(val)
+    if (val_lower == "up") return("Up")
+    if (val_lower == "down") return("Down")
+    if (val_lower == "sideways") return("Sideways")
+    val
+  }
+
+  normalize_direction <- function(x) {
+    toupper(trimws(as.character(x %||% "")))
+  }
+
+  normalize_curve <- function(x) {
+    toupper(trimws(as.character(x %||% "")))
+  }
+
+  normalize_confluence <- function(x) {
+    val <- trimws(as.character(x %||% ""))
+    if (!nzchar(val)) {
+      return("None")
+    }
+    val_upper <- toupper(val)
+    mapping <- c(
+      "NONE" = "None",
+      "LTF_DZ_WITH_ITF_DZ" = "LTF_DZ_with_ITF_DZ",
+      "LTF_SZ_WITH_ITF_SZ" = "LTF_SZ_with_ITF_SZ"
+    )
+    mapping[[val_upper]] %||% val
+  }
+
+  allowed_trends <- c("Up", "Down", "Sideways")
+  allowed_directions <- c("D2S", "S2D", "D2ATH", "ATH2D", "S2ATL", "ATL2S")
+  allowed_curves <- c("LC", "EQ", "HC")
+  allowed_confluence <- c("None", "LTF_DZ_with_ITF_DZ", "LTF_SZ_with_ITF_SZ")
+
+  trio_definitions <- list(
+    list(exec = "5m", itf = "15m", htf = "75m"),
+    list(exec = "15m", itf = "75m", htf = "Daily"),
+    list(exec = "75m", itf = "Daily", htf = "Weekly"),
+    list(exec = "Daily", itf = "Weekly", htf = "Monthly")
+  )
+
+  output$dp_results <- DT::renderDT({
+    res <- dp_results()
+    if (is.null(res)) {
+      return(NULL)
+    }
+    DT::datatable(res, rownames = FALSE, options = list(dom = "t", paging = FALSE, ordering = FALSE))
+  })
+
+  observeEvent(input$dp_evaluate, {
+    snapshots <- dp_snapshots()
+    snapshot_lookup <- split(snapshots, snapshots$tf_label)
+
+    results <- lapply(trio_definitions, function(trio) {
+      ltf_row <- snapshot_lookup[[trio$exec]]
+      itf_row <- snapshot_lookup[[trio$itf]]
+      htf_row <- snapshot_lookup[[trio$htf]]
+
+      notes <- character()
+      valid <- TRUE
+
+      if (is.null(ltf_row)) {
+        notes <- c(notes, sprintf("Snapshot missing for %s", trio$exec))
+        valid <- FALSE
+      }
+      if (is.null(itf_row)) {
+        notes <- c(notes, sprintf("Snapshot missing for %s", trio$itf))
+        valid <- FALSE
+      }
+      if (is.null(htf_row)) {
+        notes <- c(notes, sprintf("Snapshot missing for %s", trio$htf))
+        valid <- FALSE
+      }
+
+      ltf_trend <- if (!is.null(ltf_row)) normalize_trend(ltf_row$trend) else ""
+      itf_trend <- if (!is.null(itf_row)) normalize_trend(itf_row$trend) else ""
+      htf_trend <- if (!is.null(htf_row)) normalize_trend(htf_row$trend) else ""
+
+      itf_dir <- if (!is.null(itf_row)) normalize_direction(itf_row$direction) else ""
+      htf_dir <- if (!is.null(htf_row)) normalize_direction(htf_row$direction) else ""
+      curve_val <- if (!is.null(htf_row)) normalize_curve(htf_row$curve) else ""
+      confluence_val <- if (!is.null(itf_row)) normalize_confluence(itf_row$confluence) else "None"
+
+      if (nzchar(itf_trend) && !itf_trend %in% allowed_trends) {
+        notes <- c(notes, sprintf("Invalid ITF trend '%s'", itf_trend))
+        valid <- FALSE
+      }
+      if (nzchar(htf_trend) && !htf_trend %in% allowed_trends) {
+        notes <- c(notes, sprintf("Invalid HTF trend '%s'", htf_trend))
+        valid <- FALSE
+      }
+      if (!itf_dir %in% allowed_directions) {
+        notes <- c(notes, sprintf("Invalid ITF direction '%s'", itf_dir))
+        valid <- FALSE
+      }
+      if (!htf_dir %in% allowed_directions) {
+        notes <- c(notes, sprintf("Invalid HTF direction '%s'", htf_dir))
+        valid <- FALSE
+      }
+
+      regime <- if (tolower(itf_trend) == "sideways") "Sideways" else "Trending"
+
+      if (!curve_val %in% allowed_curves) {
+        notes <- c(notes, "HTF curve missing")
+        valid <- FALSE
+      }
+
+      if (!confluence_val %in% allowed_confluence) {
+        notes <- c(notes, sprintf("Invalid confluence token '%s'", confluence_val))
+        valid <- FALSE
+      }
+
+      if (regime == "Sideways") {
+        expected_conf <- if (identical(input$dp_side, "Long")) "LTF_DZ_with_ITF_DZ" else "LTF_SZ_with_ITF_SZ"
+        if (confluence_val == "None") {
+          notes <- c(notes, "Sideways ITF requires proper confluence")
+          valid <- FALSE
+        } else if (!identical(confluence_val, expected_conf)) {
+          notes <- c(notes, "Sideways ITF requires proper confluence")
+          valid <- FALSE
+        }
+      }
+
+      scenario <- NA_character_
+      eligible_flag <- FALSE
+
+      if (valid) {
+        decision_args <- list(
+          regime = regime,
+          side = input$dp_side,
+          htf_dir = htf_dir,
+          itf_dir = itf_dir,
+          htf_trend = htf_trend,
+          itf_trend = itf_trend,
+          curve = curve_val,
+          confluence = !identical(confluence_val, "None")
+        )
+        decision_formals <- names(formals(decision_engine$determine))
+        if ("ath_atl" %in% decision_formals) {
+          decision_args$ath_atl <- list(
+            htf_ath = isTRUE(htf_row$ath_flag),
+            htf_atl = isTRUE(htf_row$atl_flag)
+          )
+        }
+        dec <- do.call(decision_cached, decision_args)
+        scenario <- dec$scenario %||% NA_character_
+        eligible_flag <- isTRUE(dec$eligible)
+        notes <- c(notes, dec$reasons %||% character(0))
+      }
+
+      notes <- notes[nzchar(notes)]
+      notes <- unique(notes)
+
+      result_row <- data.frame(
+        exec_tf = trio$exec,
+        itf = trio$itf,
+        htf = trio$htf,
+        side = input$dp_side,
+        regime = regime,
+        scenario = scenario %||% NA_character_,
+        eligible = eligible_flag && valid,
+        notes = if (length(notes)) paste(notes, collapse = "; ") else "",
+        stringsAsFactors = FALSE
+      )
+
+      result_row$human_readable <- paste0(
+        "Exec TF ", trio$exec, " (ITF ", trio$itf, ", HTF ", trio$htf, "): ",
+        if (result_row$eligible) "Eligible" else "Not eligible", " for ", input$dp_side,
+        " — Scenario: ", scenario %||% "N/A",
+        if (nzchar(result_row$notes)) paste0(" | Notes: ", result_row$notes) else ""
+      )
+
+      result_row
+    })
+
+    dp_results(do.call(rbind, results))
+  })
   # Utility: render reasons as a bullet list (if any)
   render_reasons <- function(items) {
     items <- items %||% character(0)
