@@ -135,21 +135,17 @@ ui <- page_sidebar(
       div(
         class = "mt-4",
         card(
-          card_header("Controls"),
-          card_body(
-            layout_column_wrap(
-              width = 1/4,
-              textInput("dp_symbol", "Symbol"),
-              selectInput("dp_side", "Side", choices = c("Long", "Short")),
-              dateInput("dp_as_of", "As of", value = Sys.Date()),
-              div(class = "mt-4", actionButton("dp_evaluate", "Evaluate", class = "btn-primary"))
-            )
-          )
-        ),
-        card(
           card_header("Snapshot Editor"),
           card_body(
-            DTOutput("dp_snapshots")
+            div(
+              class = "d-flex flex-wrap gap-3 align-items-end mb-3",
+              div(
+                class = "flex-grow-1",
+                selectInput("dp_side", "Side", choices = c("Long", "Short"))
+              ),
+              actionButton("dp_evaluate", "Evaluate", class = "btn-primary")
+            ),
+            uiOutput("dp_snapshot_editor")
           )
         ),
         card(
@@ -183,38 +179,93 @@ server <- function(input, output, session) {
     atl_flag = rep(FALSE, 7),
     stringsAsFactors = FALSE
   )
-  dp_snapshots <- reactiveVal(dp_default_snapshots)
   dp_results <- reactiveVal(NULL)
 
-  dp_snapshot_proxy <- dataTableProxy("dp_snapshots")
+  tf_to_id <- function(tf) {
+    gsub("[^A-Za-z0-9]", "_", tolower(tf))
+  }
+  snapshot_input_id <- function(tf, field) {
+    paste0("dp_", tf_to_id(tf), "_", field)
+  }
 
-  output$dp_snapshots <- DT::renderDT({
-    DT::datatable(
-      dp_snapshots(),
-      rownames = FALSE,
-      options = list(dom = "t", paging = FALSE, ordering = FALSE),
-      editable = list(target = "cell", disable = list(columns = c(0)))
+  trend_choices <- c("Select…" = "", "Up", "Down", "Sideways")
+  direction_choices <- c(
+    "Select…" = "",
+    "D2S", "S2D", "D2ATH", "ATH2D", "S2ATL", "ATL2S"
+  )
+  curve_choices <- c("Select…" = "", "LC", "EQ", "HC")
+  confluence_choices <- c(
+    "None", "LTF_DZ_with_ITF_DZ", "LTF_SZ_with_ITF_SZ"
+  )
+
+  output$dp_snapshot_editor <- renderUI({
+    snapshots <- dp_default_snapshots
+    tagList(
+      lapply(seq_len(nrow(snapshots)), function(i) {
+        row <- snapshots[i, ]
+        tf <- row$tf_label
+        card(
+          class = "mb-3",
+          card_header(tf),
+          card_body(
+            layout_column_wrap(
+              width = 1/3,
+              selectInput(
+                snapshot_input_id(tf, "trend"),
+                "Trend",
+                choices = trend_choices,
+                selected = row$trend
+              ),
+              selectInput(
+                snapshot_input_id(tf, "direction"),
+                "Direction",
+                choices = direction_choices,
+                selected = row$direction
+              ),
+              selectInput(
+                snapshot_input_id(tf, "curve"),
+                "Curve",
+                choices = curve_choices,
+                selected = row$curve
+              ),
+              selectInput(
+                snapshot_input_id(tf, "confluence"),
+                "Confluence",
+                choices = confluence_choices,
+                selected = row$confluence
+              ),
+              selectInput(
+                snapshot_input_id(tf, "ath_flag"),
+                "HTF Near ATH?",
+                choices = c("No" = "FALSE", "Yes" = "TRUE"),
+                selected = if (isTRUE(row$ath_flag)) "TRUE" else "FALSE"
+              ),
+              selectInput(
+                snapshot_input_id(tf, "atl_flag"),
+                "HTF Near ATL?",
+                choices = c("No" = "FALSE", "Yes" = "TRUE"),
+                selected = if (isTRUE(row$atl_flag)) "TRUE" else "FALSE"
+              )
+            )
+          )
+        )
+      })
     )
   })
 
-  observeEvent(input$dp_snapshots_cell_edit, {
-    info <- input$dp_snapshots_cell_edit
-    i <- info$row
-    j <- info$col + 1
-    df <- dp_snapshots()
-    if (i < 1 || i > nrow(df) || j < 1 || j > ncol(df)) {
-      return()
+  collect_dp_snapshots <- function() {
+    df <- dp_default_snapshots
+    for (i in seq_len(nrow(df))) {
+      tf <- df$tf_label[i]
+      df$trend[i] <- input[[snapshot_input_id(tf, "trend")]] %||% ""
+      df$direction[i] <- input[[snapshot_input_id(tf, "direction")]] %||% ""
+      df$curve[i] <- input[[snapshot_input_id(tf, "curve")]] %||% ""
+      df$confluence[i] <- input[[snapshot_input_id(tf, "confluence")]] %||% "None"
+      df$ath_flag[i] <- identical(input[[snapshot_input_id(tf, "ath_flag")]], "TRUE")
+      df$atl_flag[i] <- identical(input[[snapshot_input_id(tf, "atl_flag")]], "TRUE")
     }
-    col_name <- names(df)[j]
-    value <- info$value
-    if (col_name %in% c("ath_flag", "atl_flag")) {
-      df[i, j] <- tolower(as.character(value)) %in% c("true", "t", "1", "yes")
-    } else {
-      df[i, j] <- as.character(value)
-    }
-    dp_snapshots(df)
-    DT::replaceData(dp_snapshot_proxy, df, resetPaging = FALSE, rownames = FALSE)
-  })
+    df
+  }
 
   output$dp_results <- DT::renderDT({
     res <- dp_results()
@@ -283,7 +334,7 @@ server <- function(input, output, session) {
   }
 
   observeEvent(input$dp_evaluate, {
-    snapshots <- dp_snapshots()
+    snapshots <- collect_dp_snapshots()
     snapshot_lookup <- split(snapshots, snapshots$tf_label)
 
     trios <- list(
