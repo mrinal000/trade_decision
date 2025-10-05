@@ -270,6 +270,8 @@ server <- function(input, output, session) {
     snapshots <- dp_snapshots()
     snapshot_lookup <- split(snapshots, snapshots$tf_label)
 
+    sideways_notifications <- character()
+
     results <- lapply(trio_definitions, function(trio) {
       ltf_row <- snapshot_lookup[[trio$exec]]
       itf_row <- snapshot_lookup[[trio$itf]]
@@ -291,37 +293,42 @@ server <- function(input, output, session) {
         valid <- FALSE
       }
 
-      ltf_trend <- if (!is.null(ltf_row)) normalize_trend(ltf_row$trend) else ""
-      itf_trend <- if (!is.null(itf_row)) normalize_trend(itf_row$trend) else ""
-      htf_trend <- if (!is.null(htf_row)) normalize_trend(htf_row$trend) else ""
+      ltf_trend <- if (!is.null(ltf_row)) normalize_trend(ltf_row$trend) else NA_character_
+      itf_trend <- if (!is.null(itf_row)) normalize_trend(itf_row$trend) else NA_character_
+      htf_trend <- if (!is.null(htf_row)) normalize_trend(htf_row$trend) else NA_character_
 
-      itf_dir <- if (!is.null(itf_row)) normalize_direction(itf_row$direction) else ""
-      htf_dir <- if (!is.null(htf_row)) normalize_direction(htf_row$direction) else ""
-      curve_val <- if (!is.null(htf_row)) normalize_curve(htf_row$curve) else ""
+      itf_dir <- if (!is.null(itf_row)) normalize_direction(itf_row$direction) else NA_character_
+      htf_dir <- if (!is.null(htf_row)) normalize_direction(htf_row$direction) else NA_character_
+      curve_val <- if (!is.null(htf_row)) normalize_curve(htf_row$curve) else NA_character_
       confluence_val <- if (!is.null(itf_row)) normalize_confluence(itf_row$confluence) else "None"
 
-      if (nzchar(itf_trend) && !itf_trend %in% allowed_trends) {
-        notes <- c(notes, sprintf("Invalid ITF trend '%s'", itf_trend))
-        valid <- FALSE
-      }
-      if (nzchar(htf_trend) && !htf_trend %in% allowed_trends) {
-        notes <- c(notes, sprintf("Invalid HTF trend '%s'", htf_trend))
-        valid <- FALSE
-      }
-      if (!itf_dir %in% allowed_directions) {
-        notes <- c(notes, sprintf("Invalid ITF direction '%s'", itf_dir))
-        valid <- FALSE
-      }
-      if (!htf_dir %in% allowed_directions) {
-        notes <- c(notes, sprintf("Invalid HTF direction '%s'", htf_dir))
-        valid <- FALSE
+      if (!is.null(itf_row)) {
+        if (is.na(itf_trend) || !itf_trend %in% allowed_trends) {
+          notes <- c(notes, sprintf("Invalid ITF trend '%s'", itf_row$trend))
+          valid <- FALSE
+        }
+        if (is.na(itf_dir) || !itf_dir %in% allowed_directions) {
+          notes <- c(notes, sprintf("Invalid ITF direction '%s'", itf_row$direction))
+          valid <- FALSE
+        }
       }
 
-      regime <- if (tolower(itf_trend) == "sideways") "Sideways" else "Trending"
-
-      if (!curve_val %in% allowed_curves) {
-        notes <- c(notes, "HTF curve missing")
-        valid <- FALSE
+      if (!is.null(htf_row)) {
+        if (is.na(htf_trend) || !htf_trend %in% allowed_trends) {
+          notes <- c(notes, sprintf("Invalid HTF trend '%s'", htf_row$trend))
+          valid <- FALSE
+        }
+        if (!nzchar(curve_val)) {
+          notes <- c(notes, "HTF curve missing")
+          valid <- FALSE
+        } else if (!curve_val %in% allowed_curves) {
+          notes <- c(notes, sprintf("Invalid HTF curve '%s'", htf_row$curve))
+          valid <- FALSE
+        }
+        if (is.na(htf_dir) || !htf_dir %in% allowed_directions) {
+          notes <- c(notes, sprintf("Invalid HTF direction '%s'", htf_row$direction))
+          valid <- FALSE
+        }
       }
 
       if (!confluence_val %in% allowed_confluence) {
@@ -329,14 +336,15 @@ server <- function(input, output, session) {
         valid <- FALSE
       }
 
+      regime <- if (tolower(itf_trend %||% "") == "sideways") "Sideways" else "Trending"
+
       if (regime == "Sideways") {
         expected_conf <- if (identical(input$dp_side, "Long")) "LTF_DZ_with_ITF_DZ" else "LTF_SZ_with_ITF_SZ"
-        if (confluence_val == "None") {
-          notes <- c(notes, "Sideways ITF requires proper confluence")
+        if (!identical(confluence_val, expected_conf)) {
+          note <- "Sideways ITF requires proper confluence"
+          notes <- c(notes, note)
           valid <- FALSE
-        } else if (!identical(confluence_val, expected_conf)) {
-          notes <- c(notes, "Sideways ITF requires proper confluence")
-          valid <- FALSE
+          sideways_notifications <<- c(sideways_notifications, sprintf("%s trio: %s", trio$exec, note))
         }
       }
 
@@ -344,6 +352,7 @@ server <- function(input, output, session) {
       eligible_flag <- FALSE
 
       if (valid) {
+        confluence_token <- as.character(confluence_val %||% "None")
         decision_args <- list(
           regime = regime,
           side = input$dp_side,
@@ -352,7 +361,7 @@ server <- function(input, output, session) {
           htf_trend = htf_trend,
           itf_trend = itf_trend,
           curve = curve_val,
-          confluence = !identical(confluence_val, "None")
+          confluence = confluence_token
         )
         decision_formals <- names(formals(decision_engine$determine))
         if ("ath_atl" %in% decision_formals) {
@@ -361,13 +370,17 @@ server <- function(input, output, session) {
             htf_atl = isTRUE(htf_row$atl_flag)
           )
         }
+        # Decision module expects a logical confluence flag; convert if needed.
+        if (is.character(decision_args$confluence) && length(decision_args$confluence) == 1) {
+          decision_args$confluence <- !identical(decision_args$confluence, "None")
+        }
         dec <- do.call(decision_cached, decision_args)
         scenario <- dec$scenario %||% NA_character_
         eligible_flag <- isTRUE(dec$eligible)
         notes <- c(notes, dec$reasons %||% character(0))
       }
 
-      notes <- notes[nzchar(notes)]
+      notes <- notes[!is.na(notes) & nzchar(notes)]
       notes <- unique(notes)
 
       result_row <- data.frame(
@@ -391,6 +404,12 @@ server <- function(input, output, session) {
 
       result_row
     })
+
+    if (length(sideways_notifications)) {
+      for (msg in unique(sideways_notifications)) {
+        showNotification(msg, type = "warning")
+      }
+    }
 
     dp_results(do.call(rbind, results))
   })
