@@ -55,7 +55,7 @@ DecisionModule <- R6::R6Class(
     #' @inheritParams DecisionModule
     determine = function(regime, side, htf_dir, itf_dir,
                          htf_trend, itf_trend,
-                         curve, confluence = TRUE) {
+                         curve, confluence = TRUE, ath_atl = NULL) {
       reasons <- character()
       scenario <- NA_character_
       eligible <- TRUE

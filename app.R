@@ -20,7 +20,15 @@ library(magrittr)
 library(writexl)
 
 # ---- Helpers ------------------------------------------------------------------
-`%||%` <- function(x, y) if (is.null(x)) y else x
+`%||%` <- function(x, y) {
+  if (is.null(x) || length(x) == 0) {
+    return(y)
+  }
+  if (length(x) == 1 && (is.na(x) || (is.character(x) && !nzchar(x)))) {
+    return(y)
+  }
+  x
+}
 
 pretty_scenario <- function(code) {
   if (is.null(code) || is.na(code) || !nzchar(code)) return("—")
@@ -123,48 +131,31 @@ ui <- page_sidebar(
       )
     ),
     nav_panel(
-      "Multi-TF",
+      "Decision Pairs",
       div(
         class = "mt-4",
-        h3("Multi-Timeframe Evaluation"),
         card(
           card_header("Controls"),
-          layout_column_wrap(
-            width = 1/3,
-            textInput("mtf_symbol", "Symbol"),
-            selectInput("mtf_side", "Side", choices = c("Long", "Short")),
-            selectInput("mtf_bundle", "Bundle", choices = c("intra_v1", "swing_v1")),
-            dateInput("mtf_as_of", "As of", value = Sys.Date()),
-            numericInput("mtf_base_count", "Base candles (<= 6)", value = 4, min = 0, step = 1),
-            selectInput("mtf_leg_out", "Leg-out", choices = c("Strong", "Sluggish")),
-            checkboxInput("mtf_voz", "VOZ achieved?", value = TRUE),
-            checkboxInput("mtf_fresh5m", "Fresh fine-tuned 5m?", value = TRUE),
-            numericInput("mtf_rr", "Planned RR (>= 3; >= 5 if beginner)", value = 3, min = 0, step = 0.5),
-            numericInput("mtf_risk_pct", "Max Risk % of Capital (<= 2)", value = 2, min = 0, step = 0.1),
-            numericInput("mtf_oe", "OE Score (>= 12)", value = 12, min = 0, step = 1)
+          card_body(
+            layout_column_wrap(
+              width = 1/4,
+              textInput("dp_symbol", "Symbol"),
+              selectInput("dp_side", "Side", choices = c("Long", "Short")),
+              dateInput("dp_as_of", "As of", value = Sys.Date()),
+              div(class = "mt-4", actionButton("dp_evaluate", "Evaluate", class = "btn-primary"))
+            )
           )
         ),
         card(
           card_header("Snapshot Editor"),
           card_body(
-            DTOutput("mtf_snapshots")
-          )
-        ),
-        card(
-          card_header("Actions"),
-          card_body(
-            layout_columns(
-              col_widths = c(6, 3, 3),
-              textInput("mtf_base_order_id", "Base Order ID (required to save)", value = ""),
-              div(class = "mt-4", actionButton("mtf_eval", "Evaluate Candidates")),
-              div(class = "mt-4", actionButton("mtf_save_taken", "Save Taken", class = "btn-primary"))
-            )
+            DTOutput("dp_snapshots")
           )
         ),
         card(
           card_header("Results"),
           card_body(
-            DTOutput("mtf_results")
+            DTOutput("dp_results")
           )
         )
       )
@@ -181,305 +172,275 @@ server <- function(input, output, session) {
   last_confluence <- reactiveVal(NULL)
   log_data <- reactiveVal(db_engine$get_log(200))
 
-  # ---- Multi-TF state -------------------------------------------------------
-  mtf_default_snapshots <- data.frame(
+  # ---- Decision Pairs state -------------------------------------------------
+  dp_default_snapshots <- data.frame(
     tf_label = c("1m", "5m", "15m", "75m", "Daily", "Weekly", "Monthly"),
-    trend = c("Up", "Up", "Up", "Up", "Up", "Up", "Up"),
-    direction = c("D2S", "D2S", "D2S", "D2S", "D2S", "D2S", "D2S"),
-    curve = c("", "", "", "EQ", "EQ", "EQ", "EQ"),
+    trend = rep("", 7),
+    direction = rep("", 7),
+    curve = rep("", 7),
     confluence = rep("None", 7),
     ath_flag = rep(FALSE, 7),
     atl_flag = rep(FALSE, 7),
     stringsAsFactors = FALSE
   )
-  mtf_snapshots <- reactiveVal(mtf_default_snapshots)
-  mtf_results <- reactiveVal(NULL)
+  dp_snapshots <- reactiveVal(dp_default_snapshots)
+  dp_results <- reactiveVal(NULL)
 
-  mtf_snapshot_proxy <- dataTableProxy("mtf_snapshots")
-  
-  output$mtf_snapshots <- DT::renderDT({
+  dp_snapshot_proxy <- dataTableProxy("dp_snapshots")
+
+  output$dp_snapshots <- DT::renderDT({
     DT::datatable(
-      mtf_snapshots(),
+      dp_snapshots(),
       rownames = FALSE,
       options = list(dom = "t", paging = FALSE, ordering = FALSE),
       editable = list(target = "cell", disable = list(columns = c(0)))
     )
   })
 
-  observeEvent(input$mtf_snapshots_cell_edit, {
-    info <- input$mtf_snapshots_cell_edit
+  observeEvent(input$dp_snapshots_cell_edit, {
+    info <- input$dp_snapshots_cell_edit
     i <- info$row
     j <- info$col + 1
-    v <- info$value
-    df <- mtf_snapshots()
+    df <- dp_snapshots()
     if (i < 1 || i > nrow(df) || j < 1 || j > ncol(df)) {
       return()
     }
     col_name <- names(df)[j]
+    value <- info$value
     if (col_name %in% c("ath_flag", "atl_flag")) {
-      df[i, j] <- tolower(as.character(v)) %in% c("true", "t", "1", "yes")
+      df[i, j] <- tolower(as.character(value)) %in% c("true", "t", "1", "yes")
     } else {
-      df[i, j] <- v
+      df[i, j] <- as.character(value)
     }
-    mtf_snapshots(df)
-    DT::replaceData(mtf_snapshot_proxy, df, resetPaging = FALSE, rownames = FALSE)
+    dp_snapshots(df)
+    DT::replaceData(dp_snapshot_proxy, df, resetPaging = FALSE, rownames = FALSE)
   })
 
-  output$mtf_results <- DT::renderDT({
-    res <- mtf_results()
+  output$dp_results <- DT::renderDT({
+    res <- dp_results()
     if (is.null(res)) {
       return(NULL)
     }
-    display <- res[, c("exec_tf", "scenario", "eligible", "checklist_pass", "take", "why_not"), drop = FALSE]
-    DT::datatable(display, rownames = FALSE, options = list(dom = "t", paging = FALSE, ordering = FALSE))
+    DT::datatable(res, rownames = FALSE, options = list(dom = "t", paging = FALSE, ordering = FALSE))
   })
 
-  normalize_trend <- function(x) {
-    val <- trimws(as.character(x %||% ""))
-    val_lower <- tolower(val)
-    if (val_lower == "up") return("Up")
-    if (val_lower == "down") return("Down")
-    if (val_lower == "sideways") return("Sideways")
-    val
-  }
-
-  normalize_direction <- function(x) {
-    toupper(trimws(as.character(x %||% "")))
-  }
-
-  normalize_curve <- function(x) {
-    toupper(trimws(as.character(x %||% "")))
-  }
-
-  normalize_confluence <- function(x) {
-    val <- trimws(as.character(x %||% ""))
-    if (!nzchar(val)) {
-      return("None")
+  normalize_trend <- function(value, tf_label) {
+    raw <- trimws(as.character(value %||% ""))
+    if (!nzchar(raw)) {
+      return(list(value = NA_character_, ok = FALSE, note = sprintf("Trend missing for %s", tf_label)))
     }
-    val_upper <- toupper(val)
+    mapped <- c("up" = "Up", "down" = "Down", "sideways" = "Sideways")[[tolower(raw)]]
+    if (is.null(mapped)) {
+      return(list(value = raw, ok = FALSE, note = sprintf("Invalid trend '%s' for %s", raw, tf_label)))
+    }
+    list(value = mapped, ok = TRUE, note = NULL)
+  }
+
+  normalize_direction <- function(value, tf_label) {
+    raw <- trimws(as.character(value %||% ""))
+    if (!nzchar(raw)) {
+      return(list(value = NA_character_, ok = FALSE, note = sprintf("Direction missing for %s", tf_label)))
+    }
+    normalized <- toupper(gsub("\\s+", "", raw))
+    allowed <- c("D2S", "S2D", "D2ATH", "ATH2D", "S2ATL", "ATL2S")
+    if (!normalized %in% allowed) {
+      return(list(value = normalized, ok = FALSE, note = sprintf("Invalid direction '%s' for %s", raw, tf_label)))
+    }
+    list(value = normalized, ok = TRUE, note = NULL)
+  }
+
+  normalize_curve <- function(value, tf_label, required = TRUE) {
+    raw <- trimws(as.character(value %||% ""))
+    if (!nzchar(raw)) {
+      if (required) {
+        return(list(value = NA_character_, ok = FALSE, note = "HTF curve missing"))
+      }
+      return(list(value = NA_character_, ok = TRUE, note = NULL))
+    }
+    normalized <- toupper(gsub("\\s+", "", raw))
+    allowed <- c("LC", "EQ", "HC")
+    if (!normalized %in% allowed) {
+      return(list(value = normalized, ok = FALSE, note = sprintf("Invalid curve '%s' for %s", raw, tf_label)))
+    }
+    list(value = normalized, ok = TRUE, note = NULL)
+  }
+
+  normalize_confluence <- function(value, tf_label) {
+    raw <- trimws(as.character(value %||% ""))
+    if (!nzchar(raw)) {
+      return(list(value = "None", ok = TRUE, note = NULL))
+    }
     mapping <- c(
       "NONE" = "None",
       "LTF_DZ_WITH_ITF_DZ" = "LTF_DZ_with_ITF_DZ",
       "LTF_SZ_WITH_ITF_SZ" = "LTF_SZ_with_ITF_SZ"
     )
-    mapping[[val_upper]] %||% val
+    normalized <- mapping[[toupper(raw)]]
+    if (is.null(normalized)) {
+      return(list(value = raw, ok = FALSE, note = sprintf("Invalid confluence '%s' for %s", raw, tf_label)))
+    }
+    list(value = normalized, ok = TRUE, note = NULL)
   }
 
-  allowed_directions <- c("D2S", "S2D", "D2ATH", "ATH2D", "S2ATL", "ATL2S")
-  allowed_itf_directions <- c("D2S", "S2D")
-  allowed_trends <- c("Up", "Down", "Sideways")
-  allowed_curves <- c("LC", "EQ", "HC")
-  allowed_confluence <- c("None", "LTF_DZ_with_ITF_DZ", "LTF_SZ_with_ITF_SZ")
-
-  observeEvent(input$mtf_eval, {
-    snapshots <- mtf_snapshots()
-    bundle_map <- get_bundle_map(input$mtf_bundle)
+  observeEvent(input$dp_evaluate, {
+    snapshots <- dp_snapshots()
     snapshot_lookup <- split(snapshots, snapshots$tf_label)
 
-    results <- lapply(names(bundle_map), function(exec_tf) {
-      trio <- bundle_map[[exec_tf]]
-      ltf_row <- snapshot_lookup[[trio$LTF]]
-      itf_row <- snapshot_lookup[[trio$ITF]]
-      htf_row <- snapshot_lookup[[trio$HTF]]
+    trios <- list(
+      list(exec_tf = "5m", itf = "15m", htf = "75m"),
+      list(exec_tf = "15m", itf = "75m", htf = "Daily"),
+      list(exec_tf = "75m", itf = "Daily", htf = "Weekly"),
+      list(exec_tf = "Daily", itf = "Weekly", htf = "Monthly")
+    )
 
-      validation_reasons <- character()
+    results <- lapply(trios, function(trio) {
+      notes <- character()
       valid <- TRUE
 
+      ltf_row <- snapshot_lookup[[trio$exec_tf]]
+      itf_row <- snapshot_lookup[[trio$itf]]
+      htf_row <- snapshot_lookup[[trio$htf]]
+
       if (is.null(ltf_row)) {
-        validation_reasons <- c(validation_reasons, sprintf("Snapshot missing for %s", trio$LTF))
+        notes <- c(notes, sprintf("Snapshot missing for %s", trio$exec_tf))
         valid <- FALSE
       }
       if (is.null(itf_row)) {
-        validation_reasons <- c(validation_reasons, sprintf("Snapshot missing for %s", trio$ITF))
+        notes <- c(notes, sprintf("Snapshot missing for %s", trio$itf))
         valid <- FALSE
       }
       if (is.null(htf_row)) {
-        validation_reasons <- c(validation_reasons, sprintf("Snapshot missing for %s", trio$HTF))
+        notes <- c(notes, sprintf("Snapshot missing for %s", trio$htf))
         valid <- FALSE
       }
 
-      ltf_trend <- if (!is.null(ltf_row)) normalize_trend(ltf_row$trend) else ""
-      itf_trend <- if (!is.null(itf_row)) normalize_trend(itf_row$trend) else ""
-      htf_trend <- if (!is.null(htf_row)) normalize_trend(htf_row$trend) else ""
+      ltf_trend <- NA_character_
+      ltf_dir <- NA_character_
+      itf_trend <- NA_character_
+      itf_dir <- NA_character_
+      itf_confluence <- "None"
+      htf_trend <- NA_character_
+      htf_dir <- NA_character_
+      htf_curve <- NA_character_
 
-      itf_dir <- if (!is.null(itf_row)) normalize_direction(itf_row$direction) else ""
-      htf_dir <- if (!is.null(htf_row)) normalize_direction(htf_row$direction) else ""
-      curve_val <- if (!is.null(htf_row)) normalize_curve(htf_row$curve) else ""
-      confluence_val <- if (!is.null(itf_row)) normalize_confluence(itf_row$confluence) else "None"
-
-      if (nzchar(itf_trend) && !itf_trend %in% allowed_trends) {
-        validation_reasons <- c(validation_reasons, sprintf("Invalid ITF trend '%s'", itf_trend))
-        valid <- FALSE
-      }
-      if (nzchar(htf_trend) && !htf_trend %in% allowed_trends) {
-        validation_reasons <- c(validation_reasons, sprintf("Invalid HTF trend '%s'", htf_trend))
-        valid <- FALSE
-      }
-      if (!itf_dir %in% allowed_itf_directions) {
-        validation_reasons <- c(validation_reasons, sprintf("Invalid ITF direction '%s'", itf_dir))
-        showNotification(sprintf("%s: Invalid ITF direction", exec_tf), type = "error")
-        valid <- FALSE
-      }
-      if (!htf_dir %in% allowed_directions) {
-        validation_reasons <- c(validation_reasons, sprintf("Invalid HTF direction '%s'", htf_dir))
-        showNotification(sprintf("%s: Invalid HTF direction", exec_tf), type = "error")
-        valid <- FALSE
+      if (!is.null(ltf_row)) {
+        trend_info <- normalize_trend(ltf_row$trend, trio$exec_tf)
+        dir_info <- normalize_direction(ltf_row$direction, trio$exec_tf)
+        if (!trend_info$ok) {
+          notes <- c(notes, trend_info$note)
+          valid <- FALSE
+        }
+        if (!dir_info$ok) {
+          notes <- c(notes, dir_info$note)
+          valid <- FALSE
+        }
+        ltf_trend <- trend_info$value
+        ltf_dir <- dir_info$value
       }
 
-      regime <- if (tolower(itf_trend) == "sideways") "Sideways" else "Trending"
-
-      if (!curve_val %in% allowed_curves) {
-        validation_reasons <- c(validation_reasons, "HTF curve missing")
-        showNotification(sprintf("%s: HTF curve missing", exec_tf), type = "error")
-        valid <- FALSE
+      if (!is.null(itf_row)) {
+        trend_info <- normalize_trend(itf_row$trend, trio$itf)
+        dir_info <- normalize_direction(itf_row$direction, trio$itf)
+        conf_info <- normalize_confluence(itf_row$confluence, trio$itf)
+        if (!trend_info$ok) {
+          notes <- c(notes, trend_info$note)
+          valid <- FALSE
+        }
+        if (!dir_info$ok) {
+          notes <- c(notes, dir_info$note)
+          valid <- FALSE
+        }
+        if (!conf_info$ok) {
+          notes <- c(notes, conf_info$note)
+          valid <- FALSE
+        }
+        itf_trend <- trend_info$value
+        itf_dir <- dir_info$value
+        itf_confluence <- conf_info$value
       }
 
-      if (!confluence_val %in% allowed_confluence) {
-        validation_reasons <- c(validation_reasons, sprintf("Invalid confluence token '%s'", confluence_val))
-        valid <- FALSE
+      if (!is.null(htf_row)) {
+        trend_info <- normalize_trend(htf_row$trend, trio$htf)
+        dir_info <- normalize_direction(htf_row$direction, trio$htf)
+        curve_info <- normalize_curve(htf_row$curve, trio$htf, required = TRUE)
+        if (!trend_info$ok) {
+          notes <- c(notes, trend_info$note)
+          valid <- FALSE
+        }
+        if (!dir_info$ok) {
+          notes <- c(notes, dir_info$note)
+          valid <- FALSE
+        }
+        if (!curve_info$ok) {
+          notes <- c(notes, curve_info$note)
+          valid <- FALSE
+        }
+        htf_trend <- trend_info$value
+        htf_dir <- dir_info$value
+        htf_curve <- curve_info$value
       }
+
+      regime <- if (!is.na(itf_trend) && identical(itf_trend, "Sideways")) "Sideways" else "Trending"
 
       if (regime == "Sideways") {
-        expected_conf <- if (identical(input$mtf_side, "Long")) "LTF_DZ_with_ITF_DZ" else "LTF_SZ_with_ITF_SZ"
-        if (!confluence_val %in% allowed_confluence || confluence_val == "None") {
-          validation_reasons <- c(validation_reasons, "Confluence required for sideways regime")
-          showNotification(sprintf("%s: Confluence required when ITF trend is Sideways", exec_tf), type = "error")
-          valid <- FALSE
-        } else if (!identical(confluence_val, expected_conf)) {
-          validation_reasons <- c(validation_reasons, sprintf("Confluence token '%s' does not match trade side", confluence_val))
-          showNotification(sprintf("%s: Confluence token does not align with %s side", exec_tf, input$mtf_side), type = "error")
+        expected_conf <- if (identical(input$dp_side, "Long")) "LTF_DZ_with_ITF_DZ" else "LTF_SZ_with_ITF_SZ"
+        if (!identical(itf_confluence, expected_conf)) {
+          notes <- c(notes, "Sideways ITF requires proper confluence")
           valid <- FALSE
         }
       }
 
+      htf_ath <- if (!is.null(htf_row)) isTRUE(htf_row$ath_flag) else FALSE
+      htf_atl <- if (!is.null(htf_row)) isTRUE(htf_row$atl_flag) else FALSE
+
       scenario <- NA_character_
-      eligible_flag <- FALSE
-      dec_reasons <- character()
+      decision_notes <- character()
+      decision_eligible <- FALSE
 
       if (valid) {
-        dec <- decision_cached(
+        dec <- decision_engine$determine(
           regime = regime,
-          side = input$mtf_side,
+          side = input$dp_side,
           htf_dir = htf_dir,
           itf_dir = itf_dir,
           htf_trend = htf_trend,
           itf_trend = itf_trend,
-          curve = curve_val,
-          confluence = confluence_val != "None"
+          curve = htf_curve,
+          confluence = !identical(itf_confluence, "None"),
+          ath_atl = list(htf_ath = htf_ath, htf_atl = htf_atl)
         )
         scenario <- dec$scenario %||% NA_character_
-        eligible_flag <- isTRUE(dec$eligible)
-        dec_reasons <- dec$reasons %||% character(0)
+        decision_notes <- dec$reasons %||% character(0)
+        decision_eligible <- isTRUE(dec$eligible)
       }
 
-      chk <- checklist_cached(
-        base_count = input$mtf_base_count,
-        leg_out = input$mtf_leg_out,
-        voz = input$mtf_voz,
-        fresh5m = input$mtf_fresh5m,
-        rr = input$mtf_rr,
-        risk_pct = input$mtf_risk_pct,
-        oe = input$mtf_oe,
-        decision_match = eligible_flag && valid
+      all_notes <- unique(c(notes, decision_notes))
+      all_notes <- all_notes[nzchar(all_notes)]
+
+      eligible_flag <- valid && decision_eligible
+
+      human_readable <- paste0(
+        "Exec TF ", trio$exec_tf, " (ITF ", trio$itf, ", HTF ", trio$htf, "): ",
+        if (eligible_flag) "Eligible" else "Not eligible", " for ", input$dp_side,
+        " — Scenario: ", scenario %||% "N/A",
+        if (length(all_notes)) paste0(" | Notes: ", paste(all_notes, collapse = "; ")) else ""
       )
-      checklist_pass <- isTRUE(chk$passed)
-      chk_reasons <- chk$reasons %||% character(0)
-
-      combined_reasons <- unique(c(validation_reasons, dec_reasons, chk_reasons))
-      combined_reasons <- combined_reasons[nzchar(combined_reasons)]
-      why_not <- if (length(combined_reasons) && !(eligible_flag && checklist_pass)) {
-        paste(combined_reasons, collapse = "; ")
-      } else {
-        ""
-      }
-
-      take_flag <- eligible_flag && checklist_pass
 
       data.frame(
-        exec_tf = exec_tf,
-        scenario = scenario,
-        eligible = eligible_flag,
-        checklist_pass = checklist_pass,
-        take = take_flag,
-        why_not = if (nzchar(why_not)) why_not else "",
+        exec_tf = trio$exec_tf,
+        itf = trio$itf,
+        htf = trio$htf,
+        side = input$dp_side,
         regime = regime,
-        side = input$mtf_side,
-        htf_dir = htf_dir,
-        itf_dir = itf_dir,
-        htf_trend = htf_trend,
-        itf_trend = itf_trend,
-        curve = curve_val,
-        confluence = confluence_val,
-        reasons = if (length(combined_reasons)) paste(combined_reasons, collapse = "; ") else "",
+        scenario = scenario %||% NA_character_,
+        eligible = eligible_flag,
+        notes = if (length(all_notes)) paste(all_notes, collapse = "; ") else "",
+        human_readable = human_readable,
         stringsAsFactors = FALSE
       )
     })
 
-    mtf_results(do.call(rbind, results))
-  })
-
-  observeEvent(input$mtf_save_taken, {
-    results <- mtf_results()
-    if (is.null(results)) {
-      showNotification("Please evaluate candidates before saving.", type = "warning")
-      return()
-    }
-    base_id <- trimws(input$mtf_base_order_id %||% "")
-    if (!nzchar(base_id)) {
-      showNotification("Base Order ID is required to save taken trades.", type = "error")
-      return()
-    }
-
-    takes <- results[isTRUE(results$take), , drop = FALSE]
-    if (!nrow(takes)) {
-      showNotification("No take candidates to save.", type = "warning")
-      return()
-    }
-
-    save_ok <- TRUE
-    for (idx in seq_len(nrow(takes))) {
-      row <- takes[idx, , drop = FALSE]
-      order_id <- paste(base_id, row$exec_tf, sep = "-")
-      attempt <- try({
-        db_engine$log_trade(
-          ts = Sys.time(),
-          order_id = order_id,
-          regime = row$regime,
-          side = row$side,
-          htf_dir = row$htf_dir,
-          itf_dir = row$itf_dir,
-          htf_trend = row$htf_trend,
-          itf_trend = row$itf_trend,
-          curve = row$curve,
-          confluence = row$confluence,
-          scenario = row$scenario %||% NA_character_,
-          eligible = isTRUE(row$eligible),
-          reasons = row$reasons,
-          base_count = input$mtf_base_count,
-          leg_out = input$mtf_leg_out,
-          voz = isTRUE(input$mtf_voz),
-          fresh5m = isTRUE(input$mtf_fresh5m),
-          rr = input$mtf_rr,
-          risk_pct = input$mtf_risk_pct,
-          oe = input$mtf_oe,
-          checklist_pass = isTRUE(row$checklist_pass)
-        )
-        TRUE
-      }, silent = TRUE)
-      if (!identical(attempt, TRUE)) {
-        save_ok <- FALSE
-        showNotification(sprintf("Failed to save %s", order_id), type = "error")
-        message(
-          "Multi-TF save error for ", order_id, ": ",
-          conditionMessage(attr(attempt, "condition") %||% simpleError("unknown"))
-        )
-      }
-    }
-
-    if (save_ok) {
-      showNotification("Multi-TF trades saved.", type = "message")
-      log_data(db_engine$get_log(200))
-    }
+    dp_results(do.call(rbind, results))
   })
   # Utility: render reasons as a bullet list (if any)
   render_reasons <- function(items) {
